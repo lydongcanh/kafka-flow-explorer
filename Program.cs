@@ -1,3 +1,7 @@
+using Confluent.Kafka;
+using KafkaFlow;
+using KafkaFlow.Admin.Dashboard;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
@@ -5,7 +9,28 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services
+    .AddKafka(kafka => kafka
+        .AddCluster(cluster => cluster
+            .WithBrokers(["localhost:9092"])
+            .AddConsumer(consumer => consumer
+                .Topic("kafka-flow-chat")
+                .WithGroupId("kafka-flow-explorer")
+                .WithWorkersCount(1)
+                .WithBufferSize(10)
+            )
+            .EnableAdminMessages("kafka-flow.admin")
+            .EnableTelemetry("kafka-flow.admin")
+        ))
+    .AddControllers();
+
 var app = builder.Build();
+
+app.MapControllers();
+app.UseKafkaFlowDashboard();
+
+var kafkaBus = app.Services.CreateKafkaBus();
+await kafkaBus.StartAsync();
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
@@ -16,29 +41,15 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-var summaries = new[]
+// Add endpoint to put messages to Kafka
+app.MapPost("/send", async (IProducer<string, string> producer, string message) =>
 {
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
+    var result = await producer.ProduceAsync("kafka-flow-chat", new Message<string, string>
     {
-        var forecast = Enumerable.Range(1, 5).Select(index =>
-                new WeatherForecast
-                (
-                    DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-                    Random.Shared.Next(-20, 55),
-                    summaries[Random.Shared.Next(summaries.Length)]
-                ))
-            .ToArray();
-        return forecast;
-    })
-    .WithName("GetWeatherForecast")
-    .WithOpenApi();
+        Key = "key",
+        Value = message
+    });
+    return Results.Ok(result);
+});
 
-app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
+await app.RunAsync();
